@@ -7,6 +7,9 @@ import time
 import pygame
 from stable_baselines3 import PPO
 
+GRID_X = 10
+GRID_Y = 10
+
 
 class snakeEnv(gym.Env):
     metadata = {'render_modes': ['human', 'rgb_array'], 'render_fps': 10}
@@ -21,7 +24,6 @@ class snakeEnv(gym.Env):
         self.observation_space = gym.spaces.Box(
             low=0, high=255, shape=(sizeX, sizeY, 3), dtype=np.uint8
         )
-
         self.window = None
         self.clock = None
 
@@ -205,24 +207,24 @@ class snakeEnv(gym.Env):
             self.clock = None
 
 
-def train(snakeEnviroment, render, outputFile):
+def train(snakeEnviroment, render, outputFile, sizeX, sizeY):
     if os.path.exists(outputFile):
         with open(outputFile, 'r') as f:
             data = json.load(f)
     else:
         data = {
-            "totalSteps": 0,
-            "totalTrainingSeconds": 0,
-            "runs": []
-        }
+                "totalSteps": 0,
+                "totalTrainingSeconds": 0,
+                "runs": []
+            }
 
     sessionStart = time.time()
     episodeNumber = len(data['runs']) + 1  # pick up episode count where we left off
 
     renderMode = 'human' if render else None
-    evn = snakeEnviroment(10, 10, renderMode=renderMode)
+    evn = snakeEnviroment(sizeX, sizeY, renderMode=renderMode)
 
-    modelFile = "snake_model.zip"
+    modelFile = os.path.join(os.path.dirname(__file__), "notPys", "snake_model.zip")
     if os.path.exists(modelFile):
         model = PPO.load(modelFile, env=evn)
         print("Continuing from saved model...")
@@ -231,45 +233,53 @@ def train(snakeEnviroment, render, outputFile):
         print("Starting fresh model...")
 
     print(f"\n--- Training ---")
-    eps = 0
-    while True:
-        eps += 1
-        # train a little
-        model.learn(total_timesteps=200, reset_num_timesteps=False)
+    checkpoint_interval = 2000
+    previousTrainingSeconds = data.get("totalTrainingSeconds", 0)
 
-        # run one episode to log
-        obs, _ = evn.reset()
-        done = False
-        steps = 0
-        totalReward = 0
-        while not done:
-            action, _ = model.predict(obs)
-            obs, reward, done, _, _ = evn.step(int(action))
-            steps += 1
-            totalReward += reward
-        endLength = len(evn.snake)
-        data['totalSteps'] += steps
+    try:
+        while True:
+            # train a little
+            model.learn(total_timesteps=200, reset_num_timesteps=False)
 
-        data['runs'].append({
-            "life": episodeNumber,
-            "steps": steps,
-            "rewards": totalReward,
-            "lengthAtDeath": len(evn.snake),
-            "deathReason": evn.deathReason,
-            "totalTrainingSeconds": round(data['totalTrainingSeconds'] + (time.time() - sessionStart), 2)
-        })
+            # run one episode to log
+            obs, _ = evn.reset()
+            done = False
+            steps = 0
+            totalReward = 0
+            while not done:
+                action, _ = model.predict(obs)
+                obs, reward, done, _, _ = evn.step(int(action))
+                steps += 1
+                totalReward += reward
+            endLength = len(evn.snake)
+            data['totalSteps'] += steps
+            data['totalTrainingSeconds'] = round(previousTrainingSeconds + (time.time() - sessionStart), 2)
 
-        print(f"Ep {episodeNumber:>4} | End length: {endLength} | Steps: {steps}")
-        episodeNumber += 1
+            data['runs'].append({
+                "life": episodeNumber,
+                "steps": steps,
+                "rewards": totalReward,
+                "lengthAtDeath": endLength,
+                "deathReason": evn.deathReason,
+                "totalTrainingSeconds": data['totalTrainingSeconds']
+            })
+
+            print(f"Ep {episodeNumber:>4} | End length: {endLength} | Steps: {steps}")
+
+            if episodeNumber % checkpoint_interval == 0:
+                with open(outputFile, 'w') as f:
+                    json.dump(data, f, indent=2)
+                model.save(modelFile)
+                print(f"Checkpoint dumped after {episodeNumber} runs.")
+
+            episodeNumber += 1
+
+    except KeyboardInterrupt:
+        print("\nTraining interrupted, saving final checkpoint...")
+    finally:
         with open(outputFile, 'w') as f:
             json.dump(data, f, indent=2)
-            
         model.save(modelFile)
         evn.close()
-
-        sessionTime = time.time() - sessionStart
-        data['totalTrainingSeconds'] = round(data['totalTrainingSeconds'] + sessionTime, 2)
-
-
 
         print(f"\nDone | Total steps: {data['totalSteps']} | Total time: {data['totalTrainingSeconds']}s")
